@@ -1,5 +1,6 @@
 /* love — Infra CLI for vinnel.cloud
- * Build: cc -O3 -o bin/love bin/love.c
+ * Build: cc -O3 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fPIE -pie \
+ *           -Wl,-z,relro,-z,now -o love/love love/love.c
  *
  * Fast path: execvp() replaces the process for single-command dispatches
  * (pods, certs, ingress, plan, output) — no fork, no wait, zero overhead.
@@ -9,11 +10,14 @@
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <limits.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 #define P   "\033[38;5;219m"  /* pink     */
@@ -56,11 +60,21 @@ static void logo(void) {
     putchar('\n');
 }
 
+static void *xmalloc(size_t n) {
+    void *p = malloc(n);
+    if (!p) { fputs("out of memory\n", stderr); exit(1); }
+    return p;
+}
+
 static char *project(const char *name) {
     static char path[PATH_MAX];
     if (!strcmp(name, ".")) {
         if (!getcwd(path, sizeof(path))) { perror("getcwd"); exit(1); }
         return path;
+    }
+    if (strchr(name, '/') || !strcmp(name, "..")) {
+        fprintf(stderr, "invalid project name: %s\n", name);
+        exit(1);
     }
     snprintf(path, sizeof(path), "%s/%s", projects_dir, name);
     struct stat st;
@@ -84,6 +98,86 @@ static void run(char *args[]) {
     if (pid == 0) { execvp(args[0], args); perror(args[0]); _exit(127); }
     if (pid < 0)  { perror("fork"); exit(1); }
     waitpid(pid, NULL, 0);
+}
+
+/* restore terminal echo if killed mid-prompt (Ctrl-C would leave echo off) */
+static struct termios saved_tio;
+static volatile sig_atomic_t tio_saved = 0;
+static void restore_tio(int sig) {
+    if (tio_saved) tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_tio);
+    _exit(128 + sig);
+}
+
+/* NETBIRD_PAT: env → ~/.config/love/netbird_pat → hidden prompt, saved 0600.
+ * ponytail: 0600 file like ~/.netrc; switch to libsecret if a keyring shows up */
+static void ensure_pat(void) {
+    if (getenv("NETBIRD_PAT")) return;
+
+    const char *home = getenv("HOME");
+    if (!home) { fprintf(stderr, "NETBIRD_PAT not set and $HOME unset\n"); exit(1); }
+    char dir[PATH_MAX], file[PATH_MAX], buf[512];
+    snprintf(dir, sizeof(dir), "%s/.config/love", home);
+    snprintf(file, sizeof(file), "%s/netbird_pat", dir);
+
+    /* O_NOFOLLOW: don't read through a planted symlink */
+    int rfd = open(file, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (rfd >= 0) {
+        struct stat st;
+        if (fstat(rfd, &st) == 0 && (st.st_mode & 077)) {
+            fprintf(stderr, "refusing %s: mode %04o too open, run: chmod 600 %s\n",
+                    file, st.st_mode & 07777, file);
+            close(rfd); exit(1);
+        }
+        ssize_t n = read(rfd, buf, sizeof(buf) - 1);
+        close(rfd);
+        if (n > 0) {
+            buf[n] = '\0';
+            if (n == sizeof(buf) - 1 && buf[n - 1] != '\n') {
+                fprintf(stderr, "token in %s too long (max %zu)\n", file, sizeof(buf) - 2);
+                exit(1);
+            }
+            buf[strcspn(buf, "\n")] = '\0';
+            if (*buf) { setenv("NETBIRD_PAT", buf, 1); return; }
+        }
+    }
+
+    if (!isatty(STDIN_FILENO)) {
+        fprintf(stderr, "NETBIRD_PAT not set (no tty to prompt; set env or %s)\n", file);
+        exit(1);
+    }
+    fprintf(stderr, "NETBIRD_PAT (input hidden): ");
+    tcgetattr(STDIN_FILENO, &saved_tio);
+    tio_saved = 1;
+    signal(SIGINT, restore_tio); signal(SIGTERM, restore_tio); signal(SIGHUP, restore_tio);
+    struct termios noecho = saved_tio;
+    noecho.c_lflag &= ~ECHO;
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &noecho);
+    char *ok = fgets(buf, sizeof(buf), stdin);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_tio);
+    tio_saved = 0;
+    signal(SIGINT, SIG_DFL); signal(SIGTERM, SIG_DFL); signal(SIGHUP, SIG_DFL);
+    fputc('\n', stderr);
+    if (!ok) exit(1);
+    if (strlen(buf) == sizeof(buf) - 1 && buf[sizeof(buf) - 2] != '\n') {
+        fprintf(stderr, "token too long (max %zu)\n", sizeof(buf) - 2);
+        exit(1);
+    }
+    buf[strcspn(buf, "\n")] = '\0';
+    if (!*buf) { fprintf(stderr, "empty token\n"); exit(1); }
+
+    char cfg[PATH_MAX];
+    snprintf(cfg, sizeof(cfg), "%s/.config", home);
+    mkdir(cfg, 0755); mkdir(dir, 0700);
+    /* O_EXCL after unlink: never write through a symlink someone planted */
+    unlink(file);
+    int fd = open(file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (fd >= 0) {
+        dprintf(fd, "%s\n", buf);
+        close(fd);
+        fprintf(stderr, "saved to %s (0600)\n", file);
+    } else
+        perror(file);  /* still usable this run */
+    setenv("NETBIRD_PAT", buf, 1);
 }
 
 static void hr(int n) {
@@ -182,7 +276,7 @@ int main(int argc, char *argv[]) {
         if (!nr) { fprintf(stderr, "usage: love %s <project> [tf-args]\n", cmd); return 1; }
         char *proj = project(rest[0]);
         int extra = strcmp(cmd, "output") ? nr - 1 : 0;
-        char **args = malloc((5 + extra + 1) * sizeof *args);
+        char **args = xmalloc((5 + extra + 1) * sizeof *args);
         args[0] = "direnv"; args[1] = "exec"; args[2] = proj;
         args[3] = "terraform"; args[4] = (char *)cmd;
         for (int i = 0; i < extra; i++) args[5 + i] = rest[1 + i];
@@ -193,7 +287,7 @@ int main(int argc, char *argv[]) {
 
     /* ── kubectl single-shot commands (execvp: no fork) ────────────── */
     if (!strcmp(cmd, "pods")) {
-        char **args = malloc((4 + nr + 1) * sizeof *args);
+        char **args = xmalloc((4 + nr + 1) * sizeof *args);
         args[0] = "kubectl"; args[1] = "get"; args[2] = "pods"; args[3] = "-A";
         for (int i = 0; i < nr; i++) args[4 + i] = rest[i];
         args[4 + nr] = NULL;
@@ -221,7 +315,7 @@ int main(int argc, char *argv[]) {
 
     if (!strcmp(cmd, "logs")) {
         if (!nr) { fprintf(stderr, "usage: love logs <pod> [kubectl-args]\n"); return 1; }
-        char **args = malloc((nr + 3) * sizeof *args);
+        char **args = xmalloc((nr + 3) * sizeof *args);
         args[0] = "kubectl"; args[1] = "logs"; args[2] = rest[0];
         for (int i = 1; i < nr; i++) args[2 + i] = rest[i];
         args[nr + 2] = NULL;
@@ -231,10 +325,10 @@ int main(int argc, char *argv[]) {
 
     /* ── netbird: list peers via management API ─────────────────────── */
     if (!strcmp(cmd, "peers")) {
-        if (!getenv("NETBIRD_PAT")) { fprintf(stderr, "NETBIRD_PAT not set\n"); return 1; }
+        ensure_pat();
         /* token passed via env, not argv — invisible to ps */
         char *args[] = { "sh", "-c",
-            "curl -sf -H \"Authorization: Token $NETBIRD_PAT\" "
+            "curl -sf --proto '=https' --tlsv1.2 -H \"Authorization: Token $NETBIRD_PAT\" "
             "https://proxy.vinnel.cloud/api/peers | "
             "jq -r '([\"NAME\",\"IP\",\"CONNECTED\",\"LAST SEEN\"] | @tsv), "
             "(.[] | [.name, .ip, (.connected|tostring), .last_seen] | @tsv)' "
