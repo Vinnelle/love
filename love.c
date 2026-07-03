@@ -113,6 +113,9 @@ static void usage(void) {
         {"logs <pod> [kubectl-args]",  "kubectl logs"},
         {"services",                   "pods + ingress + certs in one shot"},
     };
+    static const char *nb[][2] = {
+        {"peers",                      "list netbird peers (needs NETBIRD_PAT)"},
+    };
     static const char *sh[][2] = {
         {"completion",                 "print bash completion script"},
     };
@@ -125,6 +128,7 @@ static void usage(void) {
     printf("  " LV "usage:" R " love <command> [args]\n\n");
     group("terraform", tf, 3);
     group("kubectl",   kc, 6);
+    group("netbird",   nb, 1);
     group("shell",     sh, 1);
 }
 
@@ -157,7 +161,7 @@ int main(int argc, char *argv[]) {
             "_love_completions() {\n"
             "    local cur cmds\n"
             "    cur=\"${COMP_WORDS[COMP_CWORD]}\"\n"
-            "    cmds=\"plan output fmt pods certs ingress events logs services help\"\n"
+            "    cmds=\"plan output fmt pods certs ingress events logs services peers help\"\n"
             "    if [ \"$COMP_CWORD\" -eq 1 ]; then\n"
             "        COMPREPLY=($(compgen -W \"$cmds\" -- \"$cur\"))\n"
             "        return\n"
@@ -223,6 +227,20 @@ int main(int argc, char *argv[]) {
         args[nr + 2] = NULL;
         execvp("kubectl", args);
         perror("kubectl"); return 127;
+    }
+
+    /* ── netbird: list peers via management API ─────────────────────── */
+    if (!strcmp(cmd, "peers")) {
+        if (!getenv("NETBIRD_PAT")) { fprintf(stderr, "NETBIRD_PAT not set\n"); return 1; }
+        /* token passed via env, not argv — invisible to ps */
+        char *args[] = { "sh", "-c",
+            "curl -sf -H \"Authorization: Token $NETBIRD_PAT\" "
+            "https://proxy.vinnel.cloud/api/peers | "
+            "jq -r '([\"NAME\",\"IP\",\"CONNECTED\",\"LAST SEEN\"] | @tsv), "
+            "(.[] | [.name, .ip, (.connected|tostring), .last_seen] | @tsv)' "
+            "| column -t -s \"$(printf '\\t')\"", NULL };
+        execvp("sh", args);
+        perror("sh"); return 127;
     }
 
     /* ── services: three sequential kubectl calls ───────────────────── */
