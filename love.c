@@ -22,7 +22,7 @@
 #define R   "\033[0m"         /* reset    */
 #define B   "\033[1m"         /* bold     */
 
-static const char *KITTY[4] = {
+static const char *BUNNY[4] = {
     "  (\\  /)   ",
     "  ( \xE2\x80\xA2\xCF\x89\xE2\x80\xA2)   ",  /* •ω•  */
     "  (\xE3\x81\xA3  \xE3\x81\xA4  ",             /* っ  つ */
@@ -52,7 +52,7 @@ static void init(void) {
 static void logo(void) {
     putchar('\n');
     for (int i = 0; i < 4; i++)
-        printf(P "%s" LV "%s" R "\n", KITTY[i], LOGO[i]);
+        printf(P "%s" LV "%s" R "\n", BUNNY[i], LOGO[i]);
     putchar('\n');
 }
 
