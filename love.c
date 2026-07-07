@@ -42,7 +42,9 @@ static const char *LOGO[4] = {
 
 static char projects_dir[PATH_MAX];
 
-/* resolve repo root from /proc/self/exe — no argv[0] guessing */
+/* resolve repo root from /proc/self/exe — no argv[0] guessing.
+ * projects are top-level dirs of the repo (hestia/, ...) since the
+ * projects/ prefix was dropped from the tree. */
 static void init(void) {
     char exe[PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
@@ -50,7 +52,16 @@ static void init(void) {
     exe[n] = '\0';
     char *p = strrchr(exe, '/'); if (p) *p = '\0';  /* strip binary name */
     char *q = strrchr(exe, '/'); if (q) *q = '\0';  /* strip /bin        */
-    snprintf(projects_dir, sizeof(projects_dir), "%s/projects", exe);
+    snprintf(projects_dir, sizeof(projects_dir), "%s", exe);
+}
+
+/* a "project" is a visible top-level directory */
+static int is_project_dir(const char *name) {
+    if (name[0] == '.') return 0;
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", projects_dir, name);
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
 static void logo(void) {
@@ -85,7 +96,7 @@ static char *project(const char *name) {
     if (d) {
         struct dirent *e;
         while ((e = readdir(d)))
-            if (e->d_name[0] != '.') fprintf(stderr, " %s", e->d_name);
+            if (is_project_dir(e->d_name)) fprintf(stderr, " %s", e->d_name);
         closedir(d);
     }
     fputs("\n", stderr);
@@ -244,7 +255,7 @@ int main(int argc, char *argv[]) {
         if (d) {
             struct dirent *e;
             while ((e = readdir(d)))
-                if (e->d_name[0] != '.') printf("%s\n", e->d_name);
+                if (is_project_dir(e->d_name)) printf("%s\n", e->d_name);
             closedir(d);
         }
         return 0;
