@@ -20,11 +20,11 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define P   "\033[38;5;219m"  /* pink     */
+#define P   "\033[38;5;219m"  /* pink */
 #define LV  "\033[38;5;183m"  /* lavender */
-#define DIM "\033[38;5;244m"  /* dim gray — section labels */
-#define R   "\033[0m"         /* reset    */
-#define B   "\033[1m"         /* bold     */
+#define DIM "\033[38;5;244m"  /* dim gray */
+#define R   "\033[0m"         /* reset */
+#define B   "\033[1m"         /* bold */
 
 static const char *BUNNY[4] = {
     "  (\\  /)   ",
@@ -282,7 +282,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    /* ── terraform commands ─────────────────────────────────────────── */
+    /* terraform commands */
     if (!strcmp(cmd, "plan") || !strcmp(cmd, "output") || !strcmp(cmd, "fmt")) {
         if (!nr) { fprintf(stderr, "usage: love %s <project> [tf-args]\n", cmd); return 1; }
         char *proj = project(rest[0]);
@@ -296,7 +296,7 @@ int main(int argc, char *argv[]) {
         perror("direnv"); return 127;
     }
 
-    /* ── kubectl single-shot commands (execvp: no fork) ────────────── */
+    /* kubectl single-shot commands (execvp: no fork) */
     if (!strcmp(cmd, "pods")) {
         char **args = xmalloc((4 + nr + 1) * sizeof *args);
         args[0] = "kubectl"; args[1] = "get"; args[2] = "pods"; args[3] = "-A";
@@ -334,7 +334,7 @@ int main(int argc, char *argv[]) {
         perror("kubectl"); return 127;
     }
 
-    /* ── netbird: list peers via management API ─────────────────────── */
+    /* netbird: list peers via management API */
     if (!strcmp(cmd, "peers")) {
         ensure_pat();
         /* token passed via env, not argv — invisible to ps */
@@ -348,7 +348,7 @@ int main(int argc, char *argv[]) {
         perror("sh"); return 127;
     }
 
-    /* ── services: three sequential kubectl calls ───────────────────── */
+    /* services: three sequential kubectl calls */
     if (!strcmp(cmd, "services")) {
         static const struct { const char *label, *res; } svc[3] = {
             { "pods",         "pods"         },
